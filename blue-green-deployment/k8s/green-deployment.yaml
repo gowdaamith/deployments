@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: 
+  name: flaskapp-green
+spec:
+  replicas: 1
+  selector: 
+    matchLabels:
+      app: flaskapp
+  template:
+    metadata:
+      label: 
+        app: flaskapp
+        version: blue
+      spec: 
+        containers: 
+        - name: flaskapp
+          image: gowdaamith/flaskapp:v1
+          ports:
+          - containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+

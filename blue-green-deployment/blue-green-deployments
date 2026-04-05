@@ -1,0 +1,57 @@
+What is Blue Green Deployment?
+Blue Green Deployment  is a zero-downtime deployment strategy used in production systems to release new version safely
+ 
+Its heavily used in systems running on platforms like kubernetes and CI/CD pipeline 
+
+Core idea: 
+You maintain two identical environment
+BLUE: Current Live version (deployment)
+GREEN: New version (updated app)
+
+At any time only one environment servers real user traffic
+
+How it works: 
+
+1.Current system is Live (Blue)
+----------------------------------
+*User are using the blue 
+*Everything is stable
+
+Users → 🔵 Blue (v1)
+
+2.Deploy to the new version (Green)
+-----------------------------------
+*You deploy new code to Green 
+*But user are NOT using it yet
+
+Users → 🔵 Blue (v1)
+          🟢 Green (v2 ready)
+
+
+3.Test the Green environment
+*Run tests  on Green environment
+*Check API's , performance,logs
+
+4.Switch traffic
+----------------------------------
+YOu change routing: 
+Before:
+Users → 🔵 Blue
+
+After:
+Users → 🟢 Green
+
+Now the 🟢 Green will become the production 
+
+5.Blue become the backup 
+-----------------------------------
+If something breaks 
+  Instantly swith back to blue
+
+
+Advantages: 
+*Zero downtime
+*Instant rollback
+*Safe testing in real environment
+
+
