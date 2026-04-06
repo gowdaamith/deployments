@@ -1,103 +1,121 @@
-pipeline{
+pipeline {
     agent none
-    environment{
-        APP_NAME: "flaskapp"
-        IMAGE_REPO: "flaskapp_repo/flaskapp"
-        NEW_TAG: 'v${BUILD_NUMBER}'
-
-
+    environment {
+        APP_NAME = "flaskapp"
+        IMAGE_REPO = "gowdaamith/flaskapp"
+        NEW_TAG = "v${BUILD_NUMBER}"
     }
-    stages{
-        stage('checkout scm'){
-            agent{
-                docker{
-                    image 'alpine/git:latest'
-                }
-            }
-            steps{
-                checkout scm
-
-            }
+    stages {
+        stage('Checkout SCM') {
+            agent { docker { image 'alpine/git:latest' } }
+            steps { checkout scm }
         }
-        stage('checkout the current deployment colour'){
-            agent{
-                docker {
-                    image 'alpine:latest'
+        
+        stage('Check Current Deployment Color') {
+            agent { docker { image 'bitnami/kubectl:latest' } }
+            steps {
+                script {
+                    def current = "none"
+                    try {
+                        current = sh(
+                            script: "kubectl get svc flaskapp-service -o jsonpath='{.spec.selector.version}'",
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        current = "blue" 
+                    }
                     
+                    if (current == "blue") {
+                        env.TARGET = "green"
+                    } else {
+                        env.TARGET = "blue"
+                    }
+                    echo "Current traffic is ${current}. Deploying new code to ${env.TARGET}."
                 }
-
-            }
-            steps{
-                def current=sh(
-                    script: "kubectl get svc flaskapp-service -o jsonpath='{.spec.selector.version}'"
-                    returnStdout: true
-            
-                ).trim()
-                echo "Current is traffic is comming from ${current} deployment "
-                if (current=="blue"){
-                    env.TARGET="green"
-
-                }else{
-                    env.Target="blue"
-                }
-                echo "Deploying to: ${env.TARGET}"
-
             }
         }
-        stage('build the image'){
-            agent{
-                docker{
+        
+        stage('Build the Image') {
+            agent {
+                docker {
                     image 'docker:24'
-                    args " -v /var/run/docker.sock:/var/run/docker.sock"
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
-            steps{
-                sh(
-                    docker built -t $IMAGE_REPO:$NEW_TAG .
-
-                )
+            steps {
+                sh "docker build -t ${IMAGE_REPO}:${NEW_TAG} ."
             }
         }
-        stage('push the docker image to the repository'){
-            agent{
-                docker{
+        
+        stage('Push the Docker Image') {
+            agent {
+                docker {
                     image 'docker:24'
-                    args " -v /var/run/docker.sock:/var/run/docker.sock"
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                 }
             }
-            steps{
-                withCredentials([usernamePassword(credentiasId: 'docker-creds',username:'USER',password:'PASS')]){
-                    sh(
-                        echo $PASS | docker login -u gowdaamith --password-stdin
-                        docker push $IMAGE_REPO:$NEW_TAG
-                    )
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh """
+                    echo \$PASS | docker login -u \$USER --password-stdin
+                    docker push ${IMAGE_REPO}:${NEW_TAG}
+                    """
                 }
             }
-            
         }
-        stage('deploy to target'){
-            agent{
-                docker{
-                    image 'docker:24'
-                }
-            }
-            steps{
-                withCredentials([file(credentials:'kubeconfig',variable:'KUBECONFIG')]){
-                    steps(
-                        script{
-                            def file="k8s/${env.TARGET}-deployment.yaml"
-                            sh """
-                            kubectl set image deployment/flaskapp-${env.target} flaskapp=$IMAGE_REPO:$NEW_TAG
-                            kubectl set version service/flaskapp-service flaskapp=$TARGET
-                        }
-                        
-
-                    )
+        
+        stage('Deploy & Route Test Traffic') {
+            agent { docker { image 'bitnami/kubectl:latest' } }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh """
+                    # 1. Update the pods in the target environment with the new image
+                    kubectl set image deployment/flaskapp-${env.TARGET} flaskapp=${IMAGE_REPO}:${NEW_TAG} --kubeconfig=\$KUBECONFIG
+                    
+                    # 2. Wait for the new pods to be fully ready
+                    kubectl rollout status deployment/flaskapp-${env.TARGET} --kubeconfig=\$KUBECONFIG
+                    
+                    # 3. Update the TEST service to point to the newly deployed pods
+                    kubectl set selector service flaskapp-test-service version=${env.TARGET} --kubeconfig=\$KUBECONFIG
+                    """
                 }
             }
         }
 
+        stage('Automated Integration Tests') {
+            agent { docker { image 'curlimages/curl:latest' } }
+            steps {
+                // If this step fails, the pipeline stops and production is never switched!
+                script {
+                    echo "Running tests against the ${env.TARGET} environment..."
+                    // Wait briefly for the service endpoints to update
+                    sleep 5 
+                    
+                    // Example test: Ping the test service and ensure it returns an HTTP 200 OK
+                    sh """
+                    HTTP_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" http://flaskapp-test-service)
+                    if [ "\$HTTP_STATUS" -ne 200 ]; then
+                        echo "Test Failed! Expected 200, got \$HTTP_STATUS"
+                        exit 1
+                    else
+                        echo "Test Passed! The new deployment is healthy."
+                    fi
+                    """
+                }
+            }
+        }
+
+        stage('Promote to Production (Switch Traffic)') {
+            agent { docker { image 'bitnami/kubectl:latest' } }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh """
+                    echo "Tests passed! Switching live production traffic to ${env.TARGET}."
+                    # Switch the MAIN production service to the new target
+                    kubectl set selector service flaskapp-service version=${env.TARGET} --kubeconfig=\$KUBECONFIG
+                    """
+                }
+            }
+        }
     }
-
-    
 }
